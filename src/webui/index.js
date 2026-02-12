@@ -61,7 +61,8 @@ const createWindow = () => {
       webContentLoad.end()
     })
     window.webContents.once('did-fail-load', (_, errorCode, errorDescription) => {
-      webContentLoad.fail(`${msg}: ${errorDescription}, code: ${errorCode}`)
+      const desc = errorDescription || 'unknown error'
+      webContentLoad.fail(new Error(`${msg}: ${desc}, code: ${errorCode}`))
     })
   })
   window.webContents.once('dom-ready', async (event) => {
@@ -79,8 +80,8 @@ const createWindow = () => {
     }
   })
 
-  // open devtools with: DEBUG=ipfs-desktop
-  if (process.env.DEBUG && process.env.DEBUG.match(/ipfs-desktop/)) {
+  // open devtools with: DEBUG=ipfs-desktop (only in development)
+  if (process.env.NODE_ENV !== 'production' && process.env.DEBUG && process.env.DEBUG.match(/ipfs-desktop/)) {
     window.webContents.openDevTools()
   }
 
