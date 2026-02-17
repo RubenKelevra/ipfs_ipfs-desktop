@@ -36,6 +36,9 @@ const serveReady = Promise.resolve()
  */
 const createWindow = () => {
   logger.info('[webui] creating window')
+  const enableWaylandFirstClickRouteFix =
+    process.platform === 'linux' &&
+    (process.env.XDG_SESSION_TYPE || '').toLowerCase() === 'wayland'
   const dimensions = screen.getPrimaryDisplay()
 
   const window = new BrowserWindow({
@@ -133,6 +136,48 @@ const createWindow = () => {
     sendVisibilityChange(window.isVisible())
   })
 
+  window.webContents.on('did-finish-load', () => {
+    const injectWaylandRouteFixScript = `
+      (() => {
+        if (window.__ipfsDesktopWaylandFirstClickRouteFixInjected) return
+        window.__ipfsDesktopWaylandFirstClickRouteFixInjected = true
+        const enableWaylandFirstClickRouteFix = ${JSON.stringify(enableWaylandFirstClickRouteFix)}
+        let firstRouteClickArmed = true
+
+        document.addEventListener('click', (ev) => {
+          const rawTarget = ev.target
+          const target = rawTarget && typeof rawTarget === 'object'
+            ? rawTarget
+            : null
+          const element = target && typeof target.closest === 'function'
+            ? target
+            : target && target.parentElement ? target.parentElement : null
+          const anchor = element && typeof element.closest === 'function'
+            ? element.closest('a')
+            : null
+          const anchorHref = anchor ? String(anchor.getAttribute('href') || '') : ''
+
+          if (!enableWaylandFirstClickRouteFix) return
+          if (!firstRouteClickArmed) return
+          if (!anchorHref.startsWith('#/') || anchorHref === '#/') return
+          if (ev.defaultPrevented) return
+          if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return
+
+          const expectedHash = anchorHref
+          firstRouteClickArmed = false
+          setTimeout(() => {
+            const actualHash = window.location.hash || ''
+            if (actualHash !== expectedHash) {
+              window.location.hash = expectedHash
+            }
+          }, 250)
+        }, true)
+      })()
+    `
+
+    void window.webContents.executeJavaScript(injectWaylandRouteFixScript).catch(() => {})
+  })
+
   window.on('show', () => {
     sendVisibilityChange(true)
     try {
@@ -211,12 +256,26 @@ module.exports = async function () {
     window.loadURL(nextUrl)
   }
 
+  let hasExplicitNavigation = false
+  window.webContents.on('did-navigate-in-page', (_event, navigatedUrl, isMainFrame) => {
+    if (isMainFrame === false) return
+    lastLoadedUrl = navigatedUrl
+    try {
+      const hash = new URL(navigatedUrl).hash
+      if (hash && hash !== '#/blank') {
+        hasExplicitNavigation = true
+        url.hash = hash
+      }
+    } catch (_) {}
+  })
+
   ctx.setProp('launchWebUI', async (path, { focus = true, forceRefresh = false } = {}) => {
     if (window.isDestroyed()) {
       logger.error(`[web ui] window is destroyed, not launching web ui with ${path}`)
       return
     }
     if (forceRefresh) window.webContents.reload()
+    if (path) hasExplicitNavigation = true
     if (!path) {
       logger.info('[web ui] launching web ui', { withAnalytics: analyticsKeys.FN_LAUNCH_WEB_UI })
     } else {
@@ -285,7 +344,9 @@ module.exports = async function () {
       return
     }
 
-    await launchWebUI('/')
+    if (!hasExplicitNavigation) {
+      await launchWebUI('/')
+    }
     try {
       splashScreen.destroy()
     } catch (err) {
